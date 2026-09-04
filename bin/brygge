@@ -1,0 +1,120 @@
+#!/bin/bash
+# ============================================================
+#  Brygge — chat with Claude Code inside your Obsidian vault
+#  https://github.com/YOUR_USERNAME/brygge
+# ============================================================
+#
+#  Watches your vault for the trigger `@claude` on its own line.
+#  When triggered, spawns `claude` (Claude Code CLI) with a prompt
+#  that reads your note, answers, and edits the file in place.
+#
+#  Requirements: fswatch, claude (Claude Code CLI)
+# ============================================================
+
+set -u
+
+# --- Configuration (override with env vars or ~/.config/brygge/config) ---
+BRYGGE_VAULT="${BRYGGE_VAULT:-$HOME/Documents/Obsidian Vault}"
+BRYGGE_TRIGGER="${BRYGGE_TRIGGER:-@claude}"
+BRYGGE_PREFERENCES="${BRYGGE_PREFERENCES:-Claude Memory/brygge-preferences.md}"
+BRYGGE_ASSISTANT_NAME="${BRYGGE_ASSISTANT_NAME:-Brygge}"
+BRYGGE_TIMEOUT="${BRYGGE_TIMEOUT:-300}"
+BRYGGE_STATE_DIR="${BRYGGE_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/brygge}"
+
+# Load user config if present
+CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/brygge/config"
+[ -f "$CONFIG_FILE" ] && source "$CONFIG_FILE"
+
+mkdir -p "$BRYGGE_STATE_DIR"
+LOCK="$BRYGGE_STATE_DIR/brygge.lock"
+PIDFILE="$BRYGGE_STATE_DIR/brygge.pid"
+LOG="$BRYGGE_STATE_DIR/brygge.log"
+
+# --- Preflight ---
+command -v fswatch >/dev/null || { echo "❌ fswatch not found. brew install fswatch"; exit 1; }
+command -v claude >/dev/null  || { echo "❌ claude CLI not found. https://docs.anthropic.com/claude-code"; exit 1; }
+[ -d "$BRYGGE_VAULT" ] || { echo "❌ Vault not found: $BRYGGE_VAULT"; exit 1; }
+
+# --- Singleton: only one instance ---
+if [ -f "$PIDFILE" ]; then
+    OLD_PID=$(cat "$PIDFILE" 2>/dev/null || echo "")
+    if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
+        echo "$(date '+%H:%M:%S') ℹ️  Brygge already running (PID $OLD_PID), exiting" >> "$LOG"
+        exit 0
+    fi
+fi
+echo $$ > "$PIDFILE"
+
+cleanup() { rm -f "$LOCK" "$PIDFILE"; exit; }
+trap cleanup INT TERM EXIT
+rm -f "$LOCK"
+
+echo "$(date '+%H:%M:%S') 👁  Brygge started (PID $$) — watching $BRYGGE_VAULT" >> "$LOG"
+
+# --- Build prompt (allows preferences file to shape tone/format) ---
+build_prompt() {
+    local rel_path="$1"
+    local pref_line=""
+    if [ -f "$BRYGGE_VAULT/$BRYGGE_PREFERENCES" ]; then
+        pref_line="FIRST: read '$BRYGGE_PREFERENCES' — it defines your tone and format. Follow it."
+    fi
+
+    cat <<EOF
+You are $BRYGGE_ASSISTANT_NAME, an AI assistant embedded in the user's Obsidian vault (CWD is already the vault root).
+$pref_line
+Read the file '$rel_path'. Find the line that contains exactly '$BRYGGE_TRIGGER'.
+Everything above that line (between the last '---' separator, or from the top of the file) is the user's message.
+Use the Edit tool to replace exactly the line '$BRYGGE_TRIGGER' with '**$BRYGGE_ASSISTANT_NAME:**' on its own line, followed by your answer, then two blank lines, '---', and two blank lines.
+DO NOT change anything else in the file.
+EOF
+}
+
+# --- Main loop ---
+fswatch -r \
+    --include="\\.md$" \
+    --exclude="\\.git" \
+    --exclude="node_modules" \
+    --exclude="\\.obsidian" \
+    "$BRYGGE_VAULT" \
+| while IFS= read -r CHANGED_FILE; do
+    [[ "$CHANGED_FILE" != *.md ]] && continue
+    [[ "$CHANGED_FILE" == */.git/* ]] && continue
+    [[ "$CHANGED_FILE" == */.obsidian/* ]] && continue
+    [ -f "$LOCK" ] && continue
+
+    # Trigger must be on its own line
+    grep -qE "^${BRYGGE_TRIGGER}[[:space:]]*$" "$CHANGED_FILE" 2>/dev/null || continue
+
+    touch "$LOCK"
+    REL_PATH="${CHANGED_FILE#$BRYGGE_VAULT/}"
+    echo "$(date '+%H:%M:%S') 🔔 Trigger in: $REL_PATH" >> "$LOG"
+
+    PROMPT=$(build_prompt "$REL_PATH")
+
+    # Run claude in background so we can enforce timeout
+    cd "$BRYGGE_VAULT" && claude --dangerously-skip-permissions -p "$PROMPT" \
+        < /dev/null >> "$LOG" 2>&1 &
+    CLAUDE_PID=$!
+
+    SECS=0
+    while kill -0 $CLAUDE_PID 2>/dev/null; do
+        sleep 2
+        SECS=$((SECS + 2))
+        if [ $SECS -gt "$BRYGGE_TIMEOUT" ]; then
+            kill -9 $CLAUDE_PID 2>/dev/null
+            echo "$(date '+%H:%M:%S') ⏱  Timeout after ${BRYGGE_TIMEOUT}s" >> "$LOG"
+            break
+        fi
+    done
+
+    wait $CLAUDE_PID 2>/dev/null
+    EXIT_CODE=$?
+    rm -f "$LOCK"
+
+    if [ $EXIT_CODE -eq 0 ]; then
+        echo "$(date '+%H:%M:%S') ✅ Done (${SECS}s)" >> "$LOG"
+    else
+        echo "$(date '+%H:%M:%S') ⚠️  Failed (exit $EXIT_CODE, ${SECS}s)" >> "$LOG"
+    fi
+    echo "" >> "$LOG"
+done
