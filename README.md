@@ -85,6 +85,7 @@ brygge &
 | `BRYGGE_TRIGGER` | `@claude` | Word that triggers a response |
 | `BRYGGE_PREFERENCES` | `Claude Memory/brygge-preferences.md` | Path to the preferences file (relative to vault) |
 | `BRYGGE_ASSISTANT_NAME` | `Brygge` | What the assistant calls itself |
+| `BRYGGE_MODEL` | `sonnet` | Model alias to pass to `claude --model` (e.g. `sonnet`, `opus`, `haiku`) |
 | `BRYGGE_TIMEOUT` | `300` | Kill Claude after this many seconds |
 | `BRYGGE_STATE_DIR` | `~/.local/state/brygge` | Log, lock, and pid files live here |
 

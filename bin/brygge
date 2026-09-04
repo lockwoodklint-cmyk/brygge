@@ -18,6 +18,7 @@ BRYGGE_VAULT="${BRYGGE_VAULT:-$HOME/Documents/Obsidian Vault}"
 BRYGGE_TRIGGER="${BRYGGE_TRIGGER:-@claude}"
 BRYGGE_PREFERENCES="${BRYGGE_PREFERENCES:-Claude Memory/brygge-preferences.md}"
 BRYGGE_ASSISTANT_NAME="${BRYGGE_ASSISTANT_NAME:-Brygge}"
+BRYGGE_MODEL="${BRYGGE_MODEL:-sonnet}"
 BRYGGE_TIMEOUT="${BRYGGE_TIMEOUT:-300}"
 BRYGGE_STATE_DIR="${BRYGGE_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/brygge}"
 
@@ -92,7 +93,7 @@ fswatch -r \
     PROMPT=$(build_prompt "$REL_PATH")
 
     # Run claude in background so we can enforce timeout
-    cd "$BRYGGE_VAULT" && claude --dangerously-skip-permissions -p "$PROMPT" \
+    cd "$BRYGGE_VAULT" && claude --dangerously-skip-permissions --model "$BRYGGE_MODEL" -p "$PROMPT" \
         < /dev/null >> "$LOG" 2>&1 &
     CLAUDE_PID=$!
 
